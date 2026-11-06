@@ -1,0 +1,11 @@
+streamlit>=1.40
+pandas
+pyarrow
+plotly
+joblib
+numpy==2.4.6
+scikit-learn==1.6.1
+langchain-core
+langchain-openai
+langchain-community
+pypdf
