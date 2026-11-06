@@ -54,6 +54,56 @@ py -3.12 -m venv .venv-local
 - 기본 표본의 배송 기간 중앙값은 약 **10.2일**, 배송 지연율은 약 **8.13%**, 평균 리뷰는 약 **4.16점**입니다.
 - 화면 지표는 선택한 지역·기간에 따라 바뀝니다. 사실표에는 현재 앱에서 직접 재계산하지 않는 과거 학습·평가 결과도 포함되어 있습니다.
 
+## 데이터 관계도 (ERD)
+
+이 앱은 관계형 데이터베이스 대신 Parquet·CSV 파일을 읽습니다. 아래 ERD는 **현재 저장된 파일의 열과 논리적 연결 관계**를 나타냅니다. `PK`는 파일 안에서 행을 구분하는 고유 키, `FK`는 다른 파일과 연결할 때 사용하는 열입니다. 데이터베이스가 키 제약을 강제하는 구조는 아닙니다. 도식에서 한글 열은 영문 별칭과 `원본 열` 주석으로 표시했습니다.
+
+```mermaid
+erDiagram
+    direction TB
+    ORDERS ||--|{ ITEMS : "order_id로 연결"
+
+    ORDERS["주문 · orders.parquet"] {
+        string order_id PK
+        string customer_unique_id "고객 식별값"
+        string customer_state
+        datetime order_datetime "원본 열: 주문시각"
+        float revenue "원본 열: 매출"
+        float delivery_days "원본 열: 배송일수"
+        boolean is_late "원본 열: 지연"
+        float review_score
+    }
+
+    ITEMS["상품 행 · items.parquet"] {
+        string order_id FK
+        string product_category_name_english
+        float price
+    }
+
+    SELLER_SUMMARY["판매자 요약 · seller_table.csv"] {
+        string seller_id PK
+        int frequency
+        float monetary
+        float orders_last_3m
+        float sales_last_3m
+        int recency_days
+        float avg_review_score
+    }
+
+    FACTS["Q&A 사실표 · olist_facts.csv"] {
+        string fact_id PK "원본 열: 사실ID"
+        string category "원본 열: 분야"
+        string content "원본 열: 내용"
+        string basis "원본 열: 기준"
+        string source "원본 열: 출처"
+    }
+```
+
+- 주문 **1건에 상품 행 1개 이상**이 연결됩니다. 현재 파일에서 상품 행이 없는 주문과 주문을 찾을 수 없는 상품 행은 없음을 확인했습니다.
+- `ITEMS`에는 개별 상품 ID·주문 내 순번이 없어 `order_id`만으로 상품 행을 고유하게 구분할 수 없습니다. 고객·리뷰 정보는 별도 테이블이 아니라 주문 파일에 포함되어 있습니다.
+- 판매자 요약은 전체 20개 열 중 주요 열만 표시했습니다. 현재 주문·상품 파일에는 `seller_id`가 없어 판매자 요약과 직접 연결하는 선을 그리지 않았습니다.
+- Q&A 사실표는 집계·학습 결과를 정리한 독립 자료입니다. 개별 주문·판매자의 외래 키는 없으며, 모델 설명서·가상 규정집은 검색용 문서입니다.
+
 ## 저장된 모델
 
 | 파일 | 방식과 용도 | 해석할 때 주의할 점 |
