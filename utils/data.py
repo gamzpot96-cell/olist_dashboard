@@ -1,11 +1,12 @@
 """데이터 불러오기 + 분석 함수 (STEP2 05 노트북을 넓힌 것)
-그래프 함수는 모두 (그래프, 설명 문장) 두 개를 돌려줍니다.
 """
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 DATA_DIR = Path(__file__).parent.parent / "data"      # 이 파일 기준으로 data 폴더 찾기
 
@@ -47,8 +48,7 @@ def insights(od):
     review = review.dropna()                       # 리뷰가 하나도 없는 쪽은 비교에서 뺌
     if len(review) == 2:                           # 제때 · 지연 주문이 모두 있을 때만 비교
         on, late = review[False], review[True]
-        verb = "떨어짐" if late < on else "오히려 높음 (주문 수가 적으면 우연일 수 있음)"
-        sentences.append(f"🚚 늦게 도착하면 리뷰가 **{on:.2f}점 → {late:.2f}점**으로 {verb}")
+        sentences.append(f"🚚 평균 리뷰 평점은 제때 도착 **{on:.2f}점**, 지연 도착 **{late:.2f}점**입니다.")
     if od["customer_state"].nunique() > 1:         # 지역을 하나만 고르면 '상위 3개 주'는 의미가 없음
         sentences.append(f"🗺️ 주문 상위 3개 주 ({', '.join(top3.index)})가 전체의 **{top3.sum():.1%}**")
     return sentences
@@ -88,7 +88,66 @@ def chart_delivery(od):
     r = od.groupby("지연")["review_score"].mean().rename({False: "제때 도착", True: "지연 도착"})
     fig = px.bar(x=r.index, y=r.values, text_auto=".2f", labels={"x": "", "y": "평균 리뷰"},
                  title="배송 지연 여부별 평균 리뷰")
-    return fig, f"지연 주문은 **{od['지연'].mean():.1%}**뿐이지만, 리뷰 점수를 크게 떨어뜨립니다."
+    return fig, f"선택한 주문의 배송 지연 비율은 **{od['지연'].mean():.1%}**입니다. 막대는 평점이 기록된 주문의 평균입니다."
+
+
+def chart_review_distribution(orders):
+    """배송 상태별 별점 분포와 낮은 평점 집계표를 만든다."""
+    scores = [1, 2, 3, 4, 5]
+    delivery_labels = {False: "제때 도착", True: "지연 도착"}
+    reviewed = orders[orders["review_score"].isin(scores) & orders["지연"].isin(delivery_labels)]
+    counts = pd.crosstab(reviewed["지연"], reviewed["review_score"]).reindex(
+        index=list(delivery_labels), columns=scores, fill_value=0
+    )
+    counts.index = counts.index.map(delivery_labels)
+    totals = counts.sum(axis=1)
+    low_counts = counts[[1, 2]].sum(axis=1)
+    denominators = totals.where(totals.gt(0))
+    summary = pd.DataFrame({
+        "배송 상태": counts.index,
+        "평점 기록 주문(건)": totals.to_numpy(),
+        "1~2점 주문(건)": low_counts.to_numpy(),
+        "1~2점 비율(%)": (low_counts / denominators * 100).round(2).to_numpy(),
+    })
+
+    colors = ["#ac2430", "#e27d63", "#b6a770", "#589db3", "#206488"]
+    figure = go.Figure()
+    for score, color in zip(scores, colors):
+        group_counts = counts.loc[totals.gt(0), score]
+        figure.add_trace(go.Bar(
+            name=f"{score}점",
+            y=group_counts.index,
+            x=group_counts / totals.loc[group_counts.index] * 100,
+            customdata=group_counts,
+            orientation="h",
+            marker_color=color,
+            hovertemplate="%{y} · %{fullData.name}<br>%{customdata:,}건 · %{x:.2f}%<extra></extra>",
+        ))
+    figure.update_layout(barmode="stack", height=260, legend={"orientation": "h"}, margin={"t": 10, "b": 10})
+    figure.update_xaxes(range=[0, 100], title_text="집단 내 비율", ticksuffix="%")
+    figure.update_yaxes(autorange="reversed", categoryorder="array", categoryarray=list(delivery_labels.values()))
+    return figure, summary
+
+
+def chart_order_amount(positive_amounts):
+    """같은 양수 주문 금액으로 선형·로그 축 누적 분포를 그린다."""
+    counts = positive_amounts.value_counts().sort_index()
+    cumulative_pct = counts.cumsum() / len(positive_amounts) * 100
+    figure = make_subplots(rows=1, cols=2, shared_yaxes=True, subplot_titles=("선형 축", "로그 축"))
+    for column, axis_type in [(1, "linear"), (2, "log")]:
+        figure.add_trace(go.Scatter(
+            x=counts.index,
+            y=cumulative_pct,
+            mode="lines",
+            line={"shape": "hv", "color": "#2869ab"},
+            hovertemplate="주문 금액 R$ %{x:,.2f}<br>이하 주문 %{y:.2f}%<extra></extra>",
+            showlegend=False,
+        ), row=1, col=column)
+        figure.update_xaxes(type=axis_type, title_text="주문 금액(R$)", row=1, col=column)
+    figure.update_yaxes(range=[0, 100], ticksuffix="%")
+    figure.update_yaxes(title_text="이하 주문 비율", row=1, col=1)
+    figure.update_layout(height=360)
+    return figure
 
 
 def chart_region(od):
