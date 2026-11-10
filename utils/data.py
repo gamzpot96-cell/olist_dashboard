@@ -150,6 +150,79 @@ def chart_order_amount(positive_amounts):
     return figure
 
 
+def cohort_reorders(orders, state, months):
+    """첫 주문 월과 지역을 기준으로 코호트를 고르고, 월별 재주문 고객을 센다."""
+    follow_up_months = list(range(1, 7))
+    records = orders[["customer_unique_id", "customer_state", "주문시각", "order_id"]].dropna(
+        subset=["customer_unique_id", "주문시각"]
+    )
+    if records.empty:
+        return pd.Series(dtype="int64"), pd.DataFrame(columns=follow_up_months), None, None
+
+    first_date = records["주문시각"].min()
+    last_date = records["주문시각"].max()
+    first_complete = first_date.to_period("M") + int(first_date.day > 1)
+    last_complete = last_date.to_period("M") - int(last_date.day < last_date.days_in_month)
+
+    # 기간 필터를 적용하기 전에 전체 저장 데이터에서 첫 주문을 결정한다.
+    first_orders = records.sort_values(["주문시각", "order_id"]).drop_duplicates("customer_unique_id")
+    first_orders = first_orders.set_index("customer_unique_id")
+    first_orders["첫 주문 월"] = first_orders["주문시각"].dt.to_period("M")
+    start, end = (pd.Period(month, freq="M") for month in months)
+    first_orders = first_orders[first_orders["첫 주문 월"].between(
+        max(start, first_complete), min(end, last_complete)
+    )]
+    if state != "전체":
+        first_orders = first_orders[first_orders["customer_state"].eq(state)]
+    cohort_sizes = first_orders.groupby("첫 주문 월", sort=True).size()
+
+    activity = records.join(first_orders["첫 주문 월"], on="customer_unique_id", how="inner")
+    activity["주문 월"] = activity["주문시각"].dt.to_period("M")
+    activity = activity.drop_duplicates(["customer_unique_id", "주문 월"]).copy()
+    activity["경과 월"] = activity["주문 월"].astype("int64") - activity["첫 주문 월"].astype("int64")
+    activity = activity[activity["경과 월"].isin(follow_up_months)]
+    reorders = (
+        activity.groupby(["첫 주문 월", "경과 월"]).size()
+        .unstack(fill_value=0)
+        .reindex(index=cohort_sizes.index, columns=follow_up_months, fill_value=0)
+    )
+    observable = pd.DataFrame({
+        month: cohort_sizes.index + month <= last_complete
+        for month in follow_up_months
+    }, index=cohort_sizes.index)
+    return cohort_sizes, reorders.where(observable), first_complete, last_complete
+
+
+def chart_cohort_reorders(cohort_sizes, reorders):
+    rates = reorders.div(cohort_sizes, axis=0) * 100
+    labels = []
+    details = []
+    for cohort_month, row in reorders.iterrows():
+        size = cohort_sizes.loc[cohort_month]
+        labels.append([f"{count / size:.2%}" if pd.notna(count) else "" for count in row])
+        details.append([f"{int(count):,}/{size:,}명" if pd.notna(count) else "" for count in row])
+    highest_rate = rates.max().max()
+    figure = go.Figure(go.Heatmap(
+        x=[f"M+{month}" for month in reorders.columns],
+        y=cohort_sizes.index.astype(str),
+        z=rates.to_numpy(),
+        text=labels,
+        customdata=details,
+        texttemplate="%{text}",
+        textfont={"color": "#172d45"},
+        hovertemplate="첫 주문 월 %{y} · %{x}<br>재주문 %{customdata} (%{z:.2f}%)<extra></extra>",
+        hoverongaps=False,
+        zmin=0,
+        zmax=highest_rate if pd.notna(highest_rate) and highest_rate > 0 else 1,
+        colorscale=[[0, "#eff6ff"], [1, "#7db3f1"]],
+        colorbar={"title": "재주문율", "ticksuffix": "%"},
+    ))
+    figure.update_xaxes(title_text="첫 주문 후 경과 월")
+    figure.update_yaxes(title_text="첫 주문 월", autorange="reversed", type="category")
+    figure.update_layout(height=max(280, 32 * len(cohort_sizes) + 100), margin={"t": 15})
+    return figure
+
+
 def chart_region(od):
     r = od.groupby("customer_state").agg(주문수=("order_id", "count"), 배송기간=("배송일수", "median"),
                                          평균리뷰=("review_score", "mean")).reset_index()

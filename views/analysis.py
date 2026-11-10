@@ -1,8 +1,10 @@
 """📊 데이터 분석 페이지"""
+import pandas as pd
 import streamlit as st
 from utils.data import (load_data, filter_data, kpis, insights,
                         chart_monthly, chart_time, chart_category, chart_delivery, chart_region,
-                        chart_review_distribution, chart_order_amount)
+                        chart_review_distribution, chart_order_amount,
+                        cohort_reorders, chart_cohort_reorders)
 
 st.title("📊 데이터 분석")
 orders, items = load_data()
@@ -28,8 +30,9 @@ for sentence in insights(od):
     st.markdown(f"- {sentence}")
 
 # ④ 그래프 (탭)
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 매출 추이", "🕒 주문 시간", "🛍️ 카테고리",
-                                              "🚚 배송·리뷰", "🗺️ 지역", "📄 데이터"])
+tab1, tab2, tab3, tab4, tab5, tab6, cohort_tab = st.tabs([
+    "📈 매출 추이", "🕒 주문 시간", "🛍️ 카테고리", "🚚 배송·리뷰", "🗺️ 지역", "📄 데이터", "재주문 코호트"
+])
 with tab1:
     metric = st.radio("지표", ["매출", "주문 수", "객단가"], horizontal=True)
     fig, msg = chart_monthly(od, metric)
@@ -73,3 +76,24 @@ with tab5:
 with tab6:
     st.dataframe(od.head(100))
     st.download_button("CSV 내려받기", od.to_csv(index=False).encode("utf-8-sig"), "olist_orders.csv")
+with cohort_tab:
+    st.subheader("첫 주문 월별 재주문율")
+    st.caption("첫 주문이 기록된 달에 따라, 다음 달에 다시 주문한 고객 비율은 어떻게 달랐나요?")
+    st.caption("기간 필터는 첫 주문 월, 지역 필터는 첫 주문의 고객 지역을 고릅니다. 이후 주문은 전체 저장 데이터에서 확인합니다.")
+    sizes, reorders, first_complete, last_complete = cohort_reorders(orders, state, period)
+    if sizes.empty:
+        st.info("선택 조건에 해당하는 관찰 완료 첫 주문 월이 없습니다.")
+    else:
+        st.plotly_chart(chart_cohort_reorders(sizes, reorders))
+        st.caption(
+            f"관찰 완료 월: {first_complete}~{last_complete}. M+1은 첫 주문의 다음 달입니다. "
+            "0.00%는 관찰 완료 후 재주문 고객이 0명인 경우이고, 빈칸은 관찰이 끝나지 않은 달입니다."
+        )
+        next_month = reorders[1]
+        st.dataframe(pd.DataFrame({
+            "첫 주문 월": sizes.index.astype(str),
+            "첫 주문 고객(명)": sizes.to_numpy(),
+            "다음 달 재주문 고객(명)": next_month.astype("Int64").array,
+            "다음 달 재주문율(%)": (next_month / sizes * 100).round(2).to_numpy(),
+        }), hide_index=True)
+    st.caption("분모는 첫 주문 월의 고유 고객 수입니다. 배송 완료 주문 기록을 사용하며, 같은 달에 여러 번 주문한 고객은 한 번만 셉니다.")
